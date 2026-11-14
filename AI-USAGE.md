@@ -12,6 +12,7 @@
 | Implementation | Writing the first version of the solution: entities and `DbContext`, the request pipeline, authentication, AES-GCM handling, audit, admin endpoints. |
 | Tests | Writing the xUnit tests and the recording mock destination. |
 | Documentation | Drafting README.md, DESIGN-NOTES.md and DEFECT-REPORT.md. |
+| CI | Writing the GitHub Actions workflow and the SQL Server smoke-test script. |
 | Verification | Running the pipeline classes (envelope, policy checks, encryption, parameter validation, URL and header building, forwarding, timeouts, cancellation, size limits, bulkhead) against a recording upstream in the AI tool's sandbox. This run exposed the decrypted-buffer defect listed in DEFECT-REPORT.md. |
 
 ## My own work
@@ -25,6 +26,8 @@
 
 ## Note on verification
 
-The AI tool's sandbox had no access to NuGet, so the complete solution (EF Core, SQL Server
-provider, xUnit) could not be restored or built there. The EF Core code, the admin endpoints and
-the xUnit suite must be compiled and run locally before submission (see the checklist above).
+The AI tool's sandbox had no access to NuGet, so the complete solution could not be built there.
+It is verified by the GitHub Actions workflow in `.github/workflows/ci.yml`, which the AI tool also
+wrote: the full xUnit suite, and an end-to-end run of the API against SQL Server 2022
+(`scripts/smoke-test.sh`), once with the schema created by the application and once with the schema
+created from `database/schema.sql`.

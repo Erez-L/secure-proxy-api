@@ -23,6 +23,7 @@ src/SecureProxy.Api/        the Web API
   Development/              development-only seed data, mock upstream, encryption helper
 tests/SecureProxy.Tests/    xUnit tests with a recording mock destination
 database/schema.sql         SQL Server schema script
+scripts/smoke-test.sh       end-to-end check against a real SQL Server (used by CI)
 docker-compose.yml          local SQL Server
 ```
 
@@ -40,6 +41,9 @@ destination that records every request.
 ```bash
 dotnet test
 ```
+
+The same suite runs in GitHub Actions on every push (`.github/workflows/ci.yml`), together with an
+end-to-end run against SQL Server 2022 (`scripts/smoke-test.sh`).
 
 ## Run the API locally
 
