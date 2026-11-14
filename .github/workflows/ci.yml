@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet restore
+      - run: dotnet build --no-restore -c Release
+      - run: dotnet test --no-build -c Release --logger "console;verbosity=normal"
+
+  sql-server:
+    name: End-to-end against SQL Server (${{ matrix.schema }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # model  = the application creates the schema itself
+        # script = the schema comes from database/schema.sql
+        schema: [model, script]
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Your_strong_password123
+        ports:
+          - 1433:1433
+    env:
+      SQL_CONTAINER: ${{ job.services.sqlserver.id }}
+      SA_PASSWORD: Your_strong_password123
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet build -c Release
+      - name: Smoke test
+        run: bash scripts/smoke-test.sh "${{ matrix.schema }}"
+      - name: API log
+        if: always()
+        run: cat api.log || true
