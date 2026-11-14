@@ -38,9 +38,6 @@ jobs:
           MSSQL_SA_PASSWORD: Your_strong_password123
         ports:
           - 1433:1433
-    env:
-      SQL_CONTAINER: ${{ job.services.sqlserver.id }}
-      SA_PASSWORD: Your_strong_password123
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -49,6 +46,9 @@ jobs:
       - run: dotnet build -c Release
       - name: Smoke test
         run: bash scripts/smoke-test.sh "${{ matrix.schema }}"
+        env:
+          SQL_CONTAINER: ${{ job.services.sqlserver.id }}
+          SA_PASSWORD: Your_strong_password123
       - name: API log
         if: always()
         run: cat api.log || true
