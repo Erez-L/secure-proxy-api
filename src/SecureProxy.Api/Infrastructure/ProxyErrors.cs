@@ -48,6 +48,7 @@ public static class ProxyErrors
     public static ProxyException Misconfigured() => new(500, "operation_misconfigured", "The operation configuration is invalid; the request was not forwarded.", ProxyOutcome.ProxyError);
     public static ProxyException InvalidParameters(string message) => new(400, "invalid_parameters", message);
     public static ProxyException InvalidEncryptedPayload() => new(400, "invalid_encrypted_payload", "The encrypted payload could not be processed.");
+    public static ProxyException CircuitOpen() => new(503, "destination_circuit_open", "The destination is temporarily unavailable. Retry later.");
     public static ProxyException DestinationBusy() => new(503, "destination_busy", "The destination is at its concurrency limit. Retry later.");
 
     // --- execution ---

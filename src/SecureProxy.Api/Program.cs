@@ -38,7 +38,9 @@ builder.Services.AddSingleton<ISecretKeyProvider, ConfigurationSecretKeyProvider
 builder.Services.AddSingleton<AuditQueue>();
 builder.Services.AddSingleton<IAuditWriter>(sp => sp.GetRequiredService<AuditQueue>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AuditQueue>());
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<DestinationGate>();
+builder.Services.AddSingleton<DestinationCircuitBreaker>();
 builder.Services.AddSingleton<ProxyExecutor>();
 
 // One pooled handler for all upstream calls (IHttpClientFactory). Per-request timeouts are applied
@@ -86,6 +88,8 @@ builder.Services.AddRateLimiter(o =>
     });
 });
 
+builder.Services.AddProxyOpenApi();
+
 var app = builder.Build();
 
 // Last line of defence: no stack trace or exception text ever reaches a caller.
@@ -105,7 +109,8 @@ app.UseAuthorization();
 
 app.MapPost("/api/proxy/execute", (HttpContext ctx, ProxyExecutor executor) => executor.ExecuteAsync(ctx))
     .RequireAuthorization("Caller")
-    .RequireRateLimiting("proxy");
+    .RequireRateLimiting("proxy")
+    .DescribeExecuteEndpoint();
 
 app.MapAdminEndpoints();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
@@ -114,13 +119,27 @@ if (app.Configuration.GetValue("Database:ApplyMigrationsOnStartup", false))
 {
     var factory = app.Services.GetRequiredService<IDbContextFactory<ProxyDbContext>>();
     await using var db = await factory.CreateDbContextAsync();
-    // Uses EF migrations when the project has them; otherwise creates the schema from the model.
-    if (db.Database.GetMigrations().Any()) await db.Database.MigrateAsync();
-    else await db.Database.EnsureCreatedAsync();
+    // The database server may still be starting (for example right after "docker compose up").
+    for (var attempt = 1; ; attempt++)
+    {
+        try
+        {
+            await db.Database.MigrateAsync();
+            break;
+        }
+        catch (Exception ex) when (attempt < 30)
+        {
+            app.Logger.LogWarning("Database is not ready yet (attempt {Attempt}): {Message}", attempt, ex.Message);
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+    }
 }
 
 if (app.Environment.IsDevelopment())
 {
+    // API description and Swagger UI at /swagger, for exploring the API by hand. Development only.
+    app.UseSwagger();
+    app.UseSwaggerUI();
     app.MapDevelopmentEndpoints();
     await DevelopmentSupport.SeedAsync(app.Services, app.Configuration["Development:SelfBaseUrl"] ?? "http://localhost:5080");
 }

@@ -66,6 +66,10 @@ step ends the request on failure.
 | `RequestLogs` | Audit records. Metadata only. |
 | `ConfigurationHistory` | Who changed which configuration entity, when, and which properties (old/new). |
 
+The schema is managed with EF Core migrations; `database/schema.sql` is generated from them
+(`dotnet ef migrations script --idempotent`), and CI fails when the model and the migrations differ.
+Tests run on SQLite and create the schema from the model, so they do not depend on SQL Server types.
+
 ### Operational settings
 
 The assignment lists "operational settings" among the things the database contains, without
@@ -182,10 +186,15 @@ attempt.
 - **Bounded concurrency** - a bulkhead per destination
   (`Proxy:MaxConcurrentRequestsPerDestination`). Requests over the limit are rejected at once with
   `503 destination_busy` instead of queuing, so one slow destination cannot exhaust the proxy.
-- **Circuit breaking** - not implemented. The bulkhead and the timeout already bound the damage of a
-  failing destination. A breaker (for example Polly, per destination, opening on consecutive
-  timeouts or connection failures and returning 503 while open) is the natural next step. It adds no
-  duplication risk because it only blocks requests; it never repeats them.
+- **Circuit breaking** - per destination (`DestinationCircuitBreaker`). After
+  `Proxy:CircuitBreakerFailureThreshold` consecutive connection failures or timeouts, the
+  destination is not called for `Proxy:CircuitBreakerOpenSeconds`; requests get
+  `503 destination_circuit_open` at once instead of each waiting for its own timeout. After the
+  pause one request is let through as a probe: any HTTP answer closes the circuit, another failure
+  opens it again. Only failures to get an answer count. An HTTP error status (including 5xx) is an
+  answer and is relayed; a caller cancellation says nothing about the destination and is ignored.
+  The breaker only blocks requests and never repeats one, so it adds no duplication risk. State is
+  per proxy instance.
 
 ## 12. Error handling
 
@@ -259,15 +268,47 @@ visible, the values are not.
   concurrency token in the application, with the same compare-on-update behaviour, so the 409 path is
   tested. The SQL Server path uses the native `rowversion`.
 
-## 16. Known limitations
+## 16. Configuration API
 
-- The admin API covers only what is needed to demonstrate concurrency (enable/disable, limits).
-  Creating operations and rules is done through the database.
+- Destinations, encryption profiles and operations (with their parameter rules and header
+  allowlist) are created through the admin API; flags, limits and rules can be changed there.
+- Everything is validated when it is written (`ConfigurationValidator`): key format, allowed HTTP
+  methods, an absolute `https` base URL without credentials or query, a well-formed path template
+  without `.`/`..` segments, a rule for every placeholder and a placeholder for every path rule,
+  body parameters only for methods with a body, compilable patterns, and an allowlist that contains
+  no header from the never-forward list. An encryption profile is accepted only if its key reference
+  resolves in the secret source.
+- This is an early warning for administrators, not the security boundary: the request pipeline
+  re-checks the same properties on every request, because configuration can also reach the database
+  by other routes.
+- There is no delete. Operations and destinations are retired by disabling them, so audit records
+  and configuration history keep pointing at something that exists.
+
+## 17. Secrets in development
+
+The repository contains no password, API key or encryption key. `scripts/dev-setup.sh` /
+`dev-setup.ps1` generates random values on the developer's machine: a SQL Server password and two
+API keys in a git-ignored `.env`, and the connection string, API key hashes and encryption key in
+.NET user-secrets. The CI workflow uses a throwaway password for a database container that exists
+only for the duration of a job, and the smoke test generates its own keys per run.
+
+## 18. Project structure
+
+The solution is one deployable project with a folder per concern (`Proxy`, `Security`, `Data`,
+`Audit`, `Admin`) rather than separate Domain / Application / Infrastructure projects. The service
+has a single use case and a single pipeline; splitting it across assemblies would add indirection
+without isolating anything that changes independently. The seams that matter are interfaces
+(`IOperationConfigProvider`, `ISecretKeyProvider`, `IAuditWriter`), which is also what the tests
+replace. If the proxy grew a second host (for example a separate admin service), `Proxy`, `Security`
+and `Data` are the folders that would move into a shared library.
+
+## 19. Known limitations
+
 - Body parameters are scalar values; nested objects are not validated by rules.
 - Upstream authentication profiles are modelled as a reference on the destination but no
   credentials are attached to upstream requests.
-- Cache invalidation across instances relies on the cache lifetime (section 9).
-- The Development environment maps a mock upstream and an encryption helper and uses well-known
-  development API keys. A production host must never run with `ASPNETCORE_ENVIRONMENT=Development`.
+- Cache invalidation and circuit breaker state are per instance (sections 9 and 11).
+- The Development environment maps a mock upstream, Swagger UI and an encryption helper. A
+  production host must never run with `ASPNETCORE_ENVIRONMENT=Development`.
 - A path parameter rule whose name does not appear in the path template is treated as broken
   configuration and the operation is not forwarded.

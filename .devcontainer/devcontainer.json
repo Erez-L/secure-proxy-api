@@ -4,11 +4,15 @@
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {}
   },
-  "forwardPorts": [5080],
-  "postCreateCommand": "dotnet restore && dotnet user-secrets set \"EncryptionKeys:dev-crm-key\" \"$(openssl rand -base64 32)\" --project src/SecureProxy.Api",
+  "forwardPorts": [
+    5080
+  ],
+  "postCreateCommand": "dotnet restore && bash scripts/dev-setup.sh",
   "customizations": {
     "vscode": {
-      "extensions": ["ms-dotnettools.csdevkit"]
+      "extensions": [
+        "ms-dotnettools.csdevkit"
+      ]
     }
   }
 }

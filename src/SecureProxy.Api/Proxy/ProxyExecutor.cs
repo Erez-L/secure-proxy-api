@@ -32,6 +32,7 @@ public sealed partial class ProxyExecutor(
     IHttpClientFactory httpClientFactory,
     IAuditWriter audit,
     DestinationGate gate,
+    DestinationCircuitBreaker breaker,
     IOptions<ProxyOptions> options,
     ILogger<ProxyExecutor> logger)
 {
@@ -146,17 +147,23 @@ public sealed partial class ProxyExecutor(
         HttpContext ctx, RequestLog record, OperationSnapshot op, DestinationSnapshot destination, HttpRequestMessage request)
     {
         using var slot = gate.TryEnter(destination.Id) ?? throw ProxyErrors.DestinationBusy();
+        if (!breaker.TryEnter(destination.Id)) throw ProxyErrors.CircuitOpen();
 
         var timeout = TimeSpan.FromSeconds(Math.Max(1, op.TimeoutSeconds ?? destination.TimeoutSeconds));
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
         cts.CancelAfter(timeout);
 
         var client = httpClientFactory.CreateClient(UpstreamClientName);
+        var reported = false;       // whether the circuit breaker has been told how this attempt ended
         try
         {
             record.Forwarded = true;
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             record.UpstreamStatusCode = (int)response.StatusCode;
+
+            // Any HTTP answer, including an error status, proves the destination is reachable.
+            breaker.RecordSuccess(destination.Id);
+            reported = true;
 
             if (response.Content.Headers.ContentLength is { } length && length > destination.MaxResponseBytes)
                 throw ProxyErrors.UpstreamResponseTooLarge();
@@ -177,17 +184,26 @@ public sealed partial class ProxyExecutor(
         }
         catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
         {
+            // The caller left: this says nothing about the health of the destination.
             throw ProxyErrors.CallerCancelled();
         }
         catch (OperationCanceledException)
         {
+            breaker.RecordFailure(destination.Id);
+            reported = true;
             throw ProxyErrors.UpstreamTimeout();
         }
         catch (HttpRequestException ex)
         {
+            breaker.RecordFailure(destination.Id);
+            reported = true;
             // Details (host, socket error) go to the log only, never to the caller.
             logger.LogWarning(ex, "Upstream connection failure for {OperationKey}", op.Key);
             throw ProxyErrors.UpstreamUnreachable();
+        }
+        finally
+        {
+            if (!reported) breaker.Release(destination.Id);
         }
     }
 

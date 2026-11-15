@@ -49,6 +49,37 @@ public sealed class ResilienceAndResponseTests : IDisposable
     }
 
     [Fact]
+    public async Task Circuit_opens_after_repeated_connection_failures_and_stops_calling_the_destination()
+    {
+        _factory.Settings["Proxy:CircuitBreakerFailureThreshold"] = "2";
+        var client = await StartAsync();
+        _factory.Upstream.Responder = (_, _) => throw new HttpRequestException("connection refused");
+
+        var first = await client.ExecuteAsync(Get()).ReadAsync();
+        var second = await client.ExecuteAsync(Get()).ReadAsync();
+        var third = await client.ExecuteAsync(Get()).ReadAsync();
+
+        Assert.Equal(502, first.Status);
+        Assert.Equal(502, second.Status);
+        Assert.Equal(503, third.Status);
+        Assert.Equal("destination_circuit_open", third.Code);
+        Assert.Equal(2, _factory.Upstream.Requests.Count);     // the third request was never sent
+    }
+
+    [Fact]
+    public async Task Upstream_error_responses_do_not_open_the_circuit()
+    {
+        _factory.Settings["Proxy:CircuitBreakerFailureThreshold"] = "2";
+        var client = await StartAsync();
+        _factory.Upstream.Responder = (_, _) => Task.FromResult(RecordingUpstream.Json(HttpStatusCode.InternalServerError, "{}"));
+
+        for (var i = 0; i < 5; i++)
+            Assert.Equal(500, (await client.ExecuteAsync(Get()).ReadAsync()).Status);
+
+        Assert.Equal(5, _factory.Upstream.Requests.Count);
+    }
+
+    [Fact]
     public async Task Caller_over_its_rate_limit_receives_429_and_those_requests_are_not_forwarded()
     {
         _factory.Settings["Proxy:RateLimitPerSecond"] = "3";

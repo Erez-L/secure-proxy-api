@@ -24,6 +24,9 @@ public static partial class UpstreamRequestBuilder
         "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded"
     };
 
+    /// <summary>True for headers that are never forwarded, whatever an allowlist says.</summary>
+    public static bool IsNeverForwarded(string headerName) => NeverForward.Contains(headerName);
+
     /// <summary>
     /// Builds the upstream request from trusted configuration plus validated parameters.
     /// Any inconsistency in configuration fails closed with "operation_misconfigured".

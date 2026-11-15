@@ -25,6 +25,14 @@ public sealed class ProxyOptions
     /// <summary>When true, a destination whose base URL is not https is never called.</summary>
     public bool RequireHttpsDestinations { get; set; } = true;
 
+    /// <summary>
+    /// Consecutive connection failures or timeouts after which a destination is not called for
+    /// <see cref="CircuitBreakerOpenSeconds"/>. 0 disables the circuit breaker.
+    /// </summary>
+    public int CircuitBreakerFailureThreshold { get; set; } = 5;
+
+    public int CircuitBreakerOpenSeconds { get; set; } = 30;
+
     /// <summary>Maximum number of audit records waiting to be written to the database.</summary>
     public int AuditQueueCapacity { get; set; } = 10000;
 }

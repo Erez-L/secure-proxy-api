@@ -20,6 +20,10 @@ jobs:
       - run: dotnet restore
       - run: dotnet build --no-restore -c Release
       - run: dotnet test --no-build -c Release --logger "console;verbosity=normal"
+      - name: Migrations match the model
+        run: |
+          dotnet tool install --global dotnet-ef --version 8.0.11
+          dotnet ef migrations has-pending-model-changes --project src/SecureProxy.Api
 
   sql-server:
     name: End-to-end against SQL Server (${{ matrix.schema }})
@@ -27,15 +31,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # model  = the application creates the schema itself
-        # script = the schema comes from database/schema.sql
-        schema: [model, script]
+        # migrations = the application applies the EF Core migrations
+        # script     = the schema comes from database/schema.sql
+        schema: [migrations, script]
     services:
       sqlserver:
         image: mcr.microsoft.com/mssql/server:2022-latest
         env:
           ACCEPT_EULA: "Y"
-          MSSQL_SA_PASSWORD: Your_strong_password123
+          # Throwaway password for a database that exists only for the duration of this job.
+          MSSQL_SA_PASSWORD: Ci_only_Throwaway_1
         ports:
           - 1433:1433
     steps:
@@ -48,7 +53,61 @@ jobs:
         run: bash scripts/smoke-test.sh "${{ matrix.schema }}"
         env:
           SQL_CONTAINER: ${{ job.services.sqlserver.id }}
-          SA_PASSWORD: Your_strong_password123
+          SA_PASSWORD: Ci_only_Throwaway_1
       - name: API log
         if: always()
         run: cat api.log || true
+
+  local-setup:
+    name: Documented local setup (README)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Generate development secrets
+        run: |
+          bash scripts/dev-setup.sh
+          cp .env first.env
+          bash scripts/dev-setup.sh          # a second run must keep the generated values
+          cmp .env first.env
+      - name: Start SQL Server and the API as the README describes
+        run: |
+          docker compose up -d
+          dotnet run --project src/SecureProxy.Api > api.log 2>&1 &
+          for _ in $(seq 1 90); do curl -fs http://localhost:5080/health >/dev/null 2>&1 && break; sleep 2; done
+          curl -fs http://localhost:5080/health
+      - name: Call the proxy with the generated API key
+        run: |
+          set -a; . ./.env; set +a
+          status=$(curl -s -o body.json -w '%{http_code}' http://localhost:5080/api/proxy/execute \
+            -H "X-Api-Key: $PROXY_CALLER_KEY" -H "Content-Type: application/json" \
+            -d '{"clientId":"customer.get","json":{"urlId":"crm-main","parameters":{"customerId":42}}}')
+          cat body.json; echo
+          test "$status" = "200"
+          test "$(jq -r .id body.json)" = "42"
+      - name: API log
+        if: always()
+        run: cat api.log || true
+
+  windows-setup:
+    name: Windows setup script and tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Generate development secrets
+        shell: pwsh
+        run: |
+          ./scripts/dev-setup.ps1
+          $first = Get-Content .env -Raw
+          ./scripts/dev-setup.ps1
+          if ((Get-Content .env -Raw) -ne $first) { throw ".env changed on the second run" }
+          $secrets = dotnet user-secrets list --project src/SecureProxy.Api
+          foreach ($name in 'ConnectionStrings:ProxyDb', 'Auth:ApiKeys:0:Sha256', 'Auth:ApiKeys:1:Sha256', 'EncryptionKeys:dev-crm-key') {
+            if (-not ($secrets | Select-String -SimpleMatch $name)) { throw "Missing user secret $name" }
+          }
+      - run: dotnet test -c Release

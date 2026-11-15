@@ -1,9 +1,10 @@
-# Local SQL Server for development. The password is a local-only development value.
+# Local SQL Server for development. The password comes from .env, which is created by
+# scripts/dev-setup.sh (or scripts/dev-setup.ps1) and is not committed.
 services:
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     environment:
       ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: "Your_strong_password123"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Run scripts/dev-setup.sh first - it creates .env}
     ports:
       - "1433:1433"
