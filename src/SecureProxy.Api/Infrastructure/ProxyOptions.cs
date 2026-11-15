@@ -15,6 +15,18 @@ public sealed class ProxyOptions
 
     /// <summary>Per-caller rate limit (requests per second).</summary>
     public int RateLimitPerSecond { get; set; } = 50;
+
+    /// <summary>
+    /// Rate limit per client address for requests that are not authenticated. Slows down API-key
+    /// guessing without affecting callers that present a valid key.
+    /// </summary>
+    public int UnauthenticatedRateLimitPerSecond { get; set; } = 10;
+
+    /// <summary>When true, a destination whose base URL is not https is never called.</summary>
+    public bool RequireHttpsDestinations { get; set; } = true;
+
+    /// <summary>Maximum number of audit records waiting to be written to the database.</summary>
+    public int AuditQueueCapacity { get; set; } = 10000;
 }
 
 public sealed class ApiKeyEntry

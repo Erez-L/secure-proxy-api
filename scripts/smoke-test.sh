@@ -83,10 +83,26 @@ check "update with stale rowversion"          "409" "$(put true)"
 check "disabled operation is rejected"        "403 proxy" "$(call dev-caller-key "$GET")"
 check "admin api is closed to callers"        "403" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/admin/operations/customer.get" -H 'X-Api-Key: dev-caller-key')"
 
+# A body larger than the global limit, sent without Content-Length (chunked), on the real server.
+head -c 1300000 /dev/zero | tr '\0' 'x' > big.txt
+check "oversized chunked body is rejected"    "413 proxy" "$(curl -s -o body.json -D headers.txt -w '%{http_code}' "$BASE/api/proxy/execute" \
+  -H 'X-Api-Key: dev-caller-key' -H 'Content-Type: application/json' -H 'Transfer-Encoding: chunked' --data-binary @big.txt) $(grep -i '^x-proxy-source:' headers.txt | tr -d '\r' | awk '{print $2}')"
+
+# Guessing API keys is throttled per client address.
+GUESSES=""
+for i in $(seq 1 40); do
+  GUESSES="$GUESSES $(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/proxy/execute" -H "X-Api-Key: guess-$i" -H 'Content-Type: application/json' -d '{}')"
+done
+check "invalid api keys are throttled"        "yes" "$(echo "$GUESSES" | grep -q 429 && echo yes || echo no)"
+check "valid key still works after the flood" "404 proxy" "$(call dev-caller-key '{"clientId":"customer.nothere","json":{"urlId":"crm-main","parameters":{}}}')"
+
+# Audit records are written by a background worker: give it a moment.
+sleep 3
+
 # Audit and configuration history in SQL Server.
-check "audit rows written"                    "8" "$(sql "$DB" "SELECT COUNT(*) FROM RequestLogs")"
+check "audit rows written"                    "10" "$(sql "$DB" "SELECT COUNT(*) FROM RequestLogs")"
 check "forwarded requests audited"            "2" "$(sql "$DB" "SELECT COUNT(*) FROM RequestLogs WHERE Forwarded = 1 AND Outcome = 'Success'")"
-check "rejections audited as not forwarded"   "6" "$(sql "$DB" "SELECT COUNT(*) FROM RequestLogs WHERE Forwarded = 0 AND Outcome = 'Rejected'")"
+check "rejections audited as not forwarded"   "8" "$(sql "$DB" "SELECT COUNT(*) FROM RequestLogs WHERE Forwarded = 0 AND Outcome = 'Rejected'")"
 check "configuration change recorded"         "1" "$(sql "$DB" "SELECT COUNT(*) FROM ConfigurationHistory WHERE EntityType = 'Operation' AND ChangeType = 'Modified' AND ChangedBy = 'dev-admin'")"
 check "key reference not in history"          "0" "$(sql "$DB" "SELECT COUNT(*) FROM ConfigurationHistory WHERE Changes LIKE '%dev-crm-key%'")"
 

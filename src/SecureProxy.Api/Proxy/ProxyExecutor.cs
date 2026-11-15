@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 using SecureProxy.Api.Audit;
 using SecureProxy.Api.Data;
 using SecureProxy.Api.Infrastructure;
@@ -63,7 +64,9 @@ public sealed partial class ProxyExecutor(
         {
             record.Outcome = ex.Outcome;
             record.Reason = ex.Code;
-            record.ProxyStatusCode = ex.Status;
+            // If the upstream response was already on its way to the caller, the caller saw that
+            // status (and then a dropped connection), not the status of this error.
+            record.ProxyStatusCode = ctx.Response.HasStarted ? ctx.Response.StatusCode : ex.Status;
             await FailAsync(ctx, ex.Status, ex.Code, ex.Message);
         }
         catch (Exception ex)
@@ -132,7 +135,8 @@ public sealed partial class ProxyExecutor(
         var parameters = ParameterValidator.Validate(op, parametersElement);
 
         // 7. Upstream request, from trusted configuration only
-        using var request = UpstreamRequestBuilder.Build(op, destination, parameters, ctx.Request.Headers, record.CorrelationId);
+        using var request = UpstreamRequestBuilder.Build(
+            op, destination, parameters, ctx.Request.Headers, record.CorrelationId, options.Value.RequireHttpsDestinations);
 
         // 8. Forward
         await ForwardAsync(ctx, record, op, destination, request);
@@ -163,6 +167,7 @@ public sealed partial class ProxyExecutor(
             ctx.Response.Headers[ProxyErrors.SourceHeader] = "upstream";
             if (response.Content.Headers.ContentType is { } contentType)
                 ctx.Response.ContentType = contentType.ToString();
+            CopyResponseHeaders(response, ctx.Response);
 
             await RelayBodyAsync(response, ctx.Response, destination.MaxResponseBytes, cts.Token);
 
@@ -184,6 +189,29 @@ public sealed partial class ProxyExecutor(
             logger.LogWarning(ex, "Upstream connection failure for {OperationKey}", op.Key);
             throw ProxyErrors.UpstreamUnreachable();
         }
+    }
+
+    /// <summary>
+    /// Response headers relayed to the caller. Everything else is dropped: Set-Cookie and
+    /// authentication headers belong to the proxy-to-upstream hop, and Server/Via style headers
+    /// describe internal infrastructure.
+    /// </summary>
+    private static readonly HashSet<string> RelayedResponseHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ETag", "Last-Modified", "Cache-Control", "Expires", "Retry-After",
+        "Content-Language", "Content-Disposition", "Content-Encoding"
+    };
+
+    private static void CopyResponseHeaders(HttpResponseMessage response, HttpResponse target)
+    {
+        foreach (var header in response.Headers.Concat(response.Content.Headers))
+            if (RelayedResponseHeaders.Contains(header.Key))
+                target.Headers[header.Key] = new StringValues(header.Value.ToArray());
+
+        // Location is relayed only when it is relative. An absolute Location would hand the
+        // caller an internal host name.
+        if (response.Headers.Location is { IsAbsoluteUri: false } location)
+            target.Headers.Location = location.OriginalString;
     }
 
     /// <summary>Streams the upstream body to the caller with a fixed buffer and a hard byte limit.</summary>
@@ -233,6 +261,13 @@ public sealed partial class ProxyExecutor(
         catch (OperationCanceledException)
         {
             throw ProxyErrors.CallerCancelled();
+        }
+        catch (BadHttpRequestException ex)
+        {
+            // The server enforces its own body limit while a body without Content-Length is read.
+            throw ex.StatusCode == StatusCodes.Status413PayloadTooLarge
+                ? ProxyErrors.TooLarge()
+                : ProxyErrors.InvalidEnvelope("The request body could not be read.");
         }
         return buffer.ToArray();
     }

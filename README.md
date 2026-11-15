@@ -18,7 +18,7 @@ src/SecureProxy.Api/        the Web API
   Proxy/                    request pipeline (executor, validation, URL/headers, config cache, bulkhead)
   Security/                 API-key authentication, AES-GCM, secret key source abstraction
   Data/                     EF Core entities and DbContext (rowversion, configuration history)
-  Audit/                    audit writer
+  Audit/                    audit queue and background writer
   Admin/                    configuration endpoints (optimistic concurrency, 409)
   Development/              development-only seed data, mock upstream, encryption helper
 tests/SecureProxy.Tests/    xUnit tests with a recording mock destination
@@ -184,7 +184,7 @@ Every response carries `X-Correlation-ID` and `X-Proxy-Source`:
 | 409 | `configuration_conflict` | Stale configuration update (admin API) |
 | 413 | `request_too_large` | Envelope exceeds the global or per-operation limit |
 | 415 | `invalid_content_type` | Content-Type is not `application/json` |
-| 429 | `rate_limited` | Per-caller rate limit exceeded |
+| 429 | `rate_limited` | Per-caller rate limit exceeded, or too many requests without a valid API key from one address |
 | 500 | `operation_misconfigured` / `internal_error` | Invalid configuration (not forwarded) / unexpected failure |
 | 502 | `upstream_unreachable` / `upstream_response_too_large` | Connection failure / response over the limit |
 | 503 | `destination_busy` / `configuration_unavailable` | Concurrency limit reached / configuration store unavailable |
@@ -213,5 +213,8 @@ Every response carries `X-Correlation-ID` and `X-Proxy-Source`:
 | `Proxy:ConfigCacheSeconds` | 30 | Lifetime of cached configuration (0 disables the cache) |
 | `Proxy:MaxConcurrentRequestsPerDestination` | 50 | Bulkhead size per destination |
 | `Proxy:RateLimitPerSecond` | 50 | Per-caller rate limit |
+| `Proxy:UnauthenticatedRateLimitPerSecond` | 10 | Per-address limit for requests without a valid API key |
+| `Proxy:RequireHttpsDestinations` | true | Refuse destinations whose base URL is not `https` (false in Development) |
+| `Proxy:AuditQueueCapacity` | 10000 | Audit records that may wait for the background writer |
 | `Auth:ApiKeys:n` | - | `Name`, `Sha256`, `Role` (`caller`/`admin`), `AllowedOperations` |
 | `EncryptionKeys:<reference>` | - | Base64 256-bit key; supply through a secret store or environment |

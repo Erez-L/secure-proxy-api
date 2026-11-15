@@ -30,11 +30,11 @@ public static partial class UpstreamRequestBuilder
     /// </summary>
     public static HttpRequestMessage Build(
         OperationSnapshot op, DestinationSnapshot destination, ValidatedParameters parameters,
-        IHeaderDictionary incomingHeaders, string correlationId)
+        IHeaderDictionary incomingHeaders, string correlationId, bool requireHttps)
     {
         if (!HttpMethodPolicy.IsAllowed(op.HttpMethod)) throw ProxyErrors.Misconfigured();
 
-        var uri = BuildUri(op, destination, parameters);
+        var uri = BuildUri(op, destination, parameters, requireHttps);
         var request = new HttpRequestMessage(new HttpMethod(op.HttpMethod), uri);
 
         if (HttpMethodPolicy.HasBody(op.HttpMethod))
@@ -54,20 +54,27 @@ public static partial class UpstreamRequestBuilder
         return request;
     }
 
-    private static Uri BuildUri(OperationSnapshot op, DestinationSnapshot destination, ValidatedParameters parameters)
+    private static Uri BuildUri(OperationSnapshot op, DestinationSnapshot destination, ValidatedParameters parameters, bool requireHttps)
     {
         if (!Uri.TryCreate(destination.BaseUrl, UriKind.Absolute, out var baseUri) ||
             baseUri.Scheme is not ("http" or "https") ||
             !string.IsNullOrEmpty(baseUri.UserInfo) || !string.IsNullOrEmpty(baseUri.Query) || !string.IsNullOrEmpty(baseUri.Fragment))
             throw ProxyErrors.Misconfigured();
+        if (requireHttps && baseUri.Scheme != "https") throw ProxyErrors.Misconfigured();
 
         var missing = false;
+        var used = new HashSet<string>(StringComparer.Ordinal);
         var path = Placeholder().Replace(op.PathTemplate, m =>
         {
-            if (parameters.Path.TryGetValue(m.Groups[1].Value, out var value)) return Uri.EscapeDataString(value);
+            var name = m.Groups[1].Value;
+            used.Add(name);
+            if (parameters.Path.TryGetValue(name, out var value)) return Uri.EscapeDataString(value);
             missing = true;
             return "";
         });
+        // A path parameter that was accepted but has no placeholder would be dropped silently;
+        // treat that as broken configuration instead of forwarding a different request.
+        if (parameters.Path.Keys.Any(k => !used.Contains(k))) throw ProxyErrors.Misconfigured();
         if (missing || path.Contains('{') || path.Contains('}') || path.Contains('?') || path.Contains('#'))
             throw ProxyErrors.Misconfigured();
 

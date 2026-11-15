@@ -106,7 +106,7 @@ public sealed class ConfigurationAndAuditTests : IAsyncLifetime
         await _caller.ExecuteAsync(ProxyFactory.Envelope("customer.get", "crm", new { customerId = 9, extra = secretValue })).ReadAsync();
         await _caller.ExecuteAsync(ProxyFactory.Envelope("customer.unknown", "crm", new { })).ReadAsync();
 
-        var logs = await _factory.WithDbAsync(db => db.RequestLogs.OrderBy(l => l.Id).ToListAsync());
+        var logs = await _factory.WithDbAsync(db => db.RequestLogs.OrderBy(l => l.StartedAtUtc).ToListAsync());
         Assert.Equal(3, logs.Count);
         Assert.All(logs, l => Assert.Equal("audit-test-0001", l.CorrelationId));
         Assert.All(logs, l => Assert.Equal("test-caller", l.Caller));

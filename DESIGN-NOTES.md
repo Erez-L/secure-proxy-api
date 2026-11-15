@@ -47,6 +47,8 @@ step ends the request on failure.
   guard also catches a path template that is itself wrong.
 - The upstream `HttpClient` does not follow redirects, so a destination cannot send the proxy to
   another host. It does not use cookies or the system proxy.
+- A destination whose base URL is not `https` is refused (`Proxy:RequireHttpsDestinations`, on by
+  default; switched off only in the Development settings, where the mock upstream is plain HTTP).
 - Only `GET`, `POST`, `PUT`, `PATCH` and `DELETE` can be forwarded. An operation configured with
   any other method is refused at execution time.
 - Hop-by-hop headers, `Host`, `Authorization`, `Cookie`, the proxy's own `X-Api-Key` and
@@ -171,7 +173,12 @@ attempt.
 
 ## 11. Resilience
 
-- **Rate limiting** - fixed window per caller (`Proxy:RateLimitPerSecond`) -> 429.
+- **Rate limiting** - fixed window per caller (`Proxy:RateLimitPerSecond`) -> 429. Requests that
+  carry no valid API key are limited separately, per client address
+  (`Proxy:UnauthenticatedRateLimitPerSecond`), so keys cannot be guessed at full speed and a flood of
+  invalid keys does not consume the allowance of legitimate callers. Behind a load balancer the
+  client address must come from forwarded headers; that wiring is deployment-specific and not
+  included.
 - **Bounded concurrency** - a bulkhead per destination
   (`Proxy:MaxConcurrentRequestsPerDestination`). Requests over the limit are rejected at once with
   `503 destination_busy` instead of queuing, so one slow destination cannot exhaust the proxy.
@@ -186,6 +193,15 @@ attempt.
   connection strings, exception messages, stack traces or configuration values. Details go to the
   structured log under the correlation id.
 - A global exception handler covers anything outside the pipeline.
+- A request body over the size limit is answered with 413 whether or not it carries a
+  `Content-Length` (for a chunked body the server's own limit fires while the body is read, and that
+  is mapped to the same 413). The 413 response also carries `Connection: close`: the oversized body
+  is never read, so the connection cannot be reused.
+- From an upstream response only the status, the body, `Content-Type` and a fixed set of headers
+  are relayed (`ETag`, `Last-Modified`, `Cache-Control`, `Expires`, `Retry-After`,
+  `Content-Language`, `Content-Disposition`, `Content-Encoding`). `Set-Cookie`, authentication
+  headers and infrastructure headers are dropped. `Location` is relayed only when it is relative; an
+  absolute `Location` would disclose an internal host name.
 - `X-Proxy-Source` tells the caller whether a status code came from the destination or from the
   proxy. A destination's own 404 or 500 is relayed unchanged with `upstream`; a proxy 502/504 is
   marked `proxy`.
@@ -201,19 +217,27 @@ attempt.
   so arbitrary caller text is not written to the log.
 - Requests rejected by authentication (401) or by the rate limiter (429) do not enter the pipeline;
   they appear in the application log only.
-- **If SQL Server is unavailable:** audit persistence is **best-effort**. Every audit record is
-  first written as a structured log event (`ProxyAudit`), then inserted into SQL Server with a
-  5-second limit. If the insert fails, the request outcome is unchanged and a `ProxyAuditPersistFailed`
-  error is logged.
+- **How it is written:** the record is first emitted as a structured log event (`ProxyAudit`), then
+  placed on a bounded in-memory queue (`Proxy:AuditQueueCapacity`, default 10,000). A background
+  worker writes the queue to SQL Server in batches. The caller never waits for the database.
+- **If SQL Server is unavailable:** audit persistence is **buffered and best-effort**. A failed
+  batch is not retried; a `ProxyAuditPersistFailed` error is logged with the number of records. If
+  the queue is full, the record is not queued and `ProxyAuditDropped` is logged. In both cases the
+  request outcome is unchanged and the record still exists in the log stream.
   - Consequence: during a database outage the proxy keeps serving operations whose configuration is
-    cached, and the audit trail for that period exists only in the log stream. Operations must ship
-    logs to durable storage and alert on `ProxyAuditPersistFailed`; missing rows can be rebuilt
-    from the log events.
+    cached, and the audit trail for that period exists only in the logs. Operations must ship logs
+    to durable storage and alert on `ProxyAuditPersistFailed` / `ProxyAuditDropped`; missing rows
+    can be rebuilt from the `ProxyAudit` events.
+  - Records still in the queue are written during a graceful shutdown. A process crash loses the
+    queued rows (not the log events).
+  - If the status line of an upstream response has already been sent when a timeout or size limit
+    cuts the stream, the audit row records the status the caller actually received, together with
+    the failure reason.
   - The alternative, mandatory audit (reject every request when the audit row cannot be written),
     gives a complete table but turns a database outage into a full proxy outage, and for a
     forwarded request the row can only be written *after* the upstream call, when it is too late to
-    refuse. A regulated deployment that needs it would write an "attempt" row before forwarding and
-    fail closed on that write.
+    refuse. A regulated deployment that needs it would write an "attempt" row synchronously before
+    forwarding and fail closed on that write.
 
 ## 14. Configuration history
 
@@ -243,3 +267,7 @@ visible, the values are not.
 - Upstream authentication profiles are modelled as a reference on the destination but no
   credentials are attached to upstream requests.
 - Cache invalidation across instances relies on the cache lifetime (section 9).
+- The Development environment maps a mock upstream and an encryption helper and uses well-known
+  development API keys. A production host must never run with `ASPNETCORE_ENVIRONMENT=Development`.
+- A path parameter rule whose name does not appear in the path template is treated as broken
+  configuration and the operation is not forwarded.

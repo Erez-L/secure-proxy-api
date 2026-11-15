@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using SecureProxy.Api.Audit;
 using SecureProxy.Api.Data;
 using SecureProxy.Api.Proxy;
 using SecureProxy.Api.Security;
@@ -32,6 +33,9 @@ public sealed class ProxyFactory : WebApplicationFactory<Program>
 
     public RecordingUpstream Upstream { get; } = new();
 
+    /// <summary>Extra configuration for one test, applied on top of the defaults below.</summary>
+    public Dictionary<string, string> Settings { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         _connection.Open();
@@ -39,8 +43,11 @@ public sealed class ProxyFactory : WebApplicationFactory<Program>
         builder.UseSetting("Database:ApplyMigrationsOnStartup", "false");
         builder.UseSetting("Proxy:ConfigCacheSeconds", "0");
         builder.UseSetting("Proxy:RateLimitPerSecond", "10000");
+        builder.UseSetting("Proxy:UnauthenticatedRateLimitPerSecond", "10000");
         builder.UseSetting("Proxy:MaxEnvelopeBytes", "65536");
         builder.UseSetting($"EncryptionKeys:{KeyReference}", Convert.ToBase64String(EncryptionKey));
+
+        foreach (var (key, value) in Settings) builder.UseSetting(key, value);
 
         AddKey(builder, 0, "test-caller", CallerKey, "caller", "*");
         AddKey(builder, 1, "test-admin", AdminKey, "admin", "*");
@@ -67,6 +74,8 @@ public sealed class ProxyFactory : WebApplicationFactory<Program>
 
     public async Task<T> WithDbAsync<T>(Func<ProxyDbContext, Task<T>> action)
     {
+        // Audit records are written by a background worker; wait for it before looking at the database.
+        await Services.GetRequiredService<AuditQueue>().FlushAsync(TimeSpan.FromSeconds(10));
         var factory = Services.GetRequiredService<IDbContextFactory<ProxyDbContext>>();
         await using var db = await factory.CreateDbContextAsync();
         return await action(db);
@@ -81,9 +90,16 @@ public sealed class ProxyFactory : WebApplicationFactory<Program>
 
             var crm = new Destination { Key = "crm", Name = "CRM", BaseUrl = BaseUrl, TimeoutSeconds = 1, MaxResponseBytes = 1024 };
             var legacy = new Destination { Key = "legacy", Name = "Legacy", BaseUrl = "https://legacy.internal.test", IsActive = false };
+            var plain = new Destination { Key = "plain", Name = "Plain HTTP", BaseUrl = "http://plain.internal.test" };
             var profile = new EncryptionProfile { Name = "default", KeyReference = KeyReference };
 
-            db.AddRange(crm, legacy, profile,
+            db.AddRange(crm, legacy, plain, profile,
+                new Operation { OperationKey = "plain.get", Destination = plain, HttpMethod = "GET", PathTemplate = "/items" },
+                new Operation
+                {
+                    OperationKey = "broken.path", Destination = crm, HttpMethod = "GET", PathTemplate = "/items",
+                    ParameterRules = { new ParameterRule { Name = "id", IsRequired = true, DataType = ParameterDataType.Integer, Location = ParameterLocation.Path } }
+                },
                 new Operation
                 {
                     OperationKey = "customer.get", Destination = crm, HttpMethod = "GET", PathTemplate = "/customers/{customerId}",

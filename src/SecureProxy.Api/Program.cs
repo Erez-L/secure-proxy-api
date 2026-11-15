@@ -35,7 +35,9 @@ builder.Services.AddDbContextFactory<ProxyDbContext>((sp, o) =>
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IOperationConfigProvider, OperationConfigProvider>();
 builder.Services.AddSingleton<ISecretKeyProvider, ConfigurationSecretKeyProvider>();
-builder.Services.AddSingleton<IAuditWriter, AuditWriter>();
+builder.Services.AddSingleton<AuditQueue>();
+builder.Services.AddSingleton<IAuditWriter>(sp => sp.GetRequiredService<AuditQueue>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AuditQueue>());
 builder.Services.AddSingleton<DestinationGate>();
 builder.Services.AddSingleton<ProxyExecutor>();
 
@@ -64,6 +66,17 @@ builder.Services.AddRateLimiter(o =>
 {
     o.OnRejected = async (context, _) =>
         await ProxyErrors.WriteAsync(context.HttpContext, 429, "rate_limited", "Too many requests. Retry later.");
+    // Requests without a valid API key are limited per client address, so keys cannot be guessed
+    // at full speed. Authenticated callers are limited by the "proxy" policy below instead.
+    o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+    {
+        if (ctx.User.Identity?.IsAuthenticated == true || !ctx.Request.Path.StartsWithSegments("/api"))
+            return RateLimitPartition.GetNoLimiter("exempt");
+        var limit = ctx.RequestServices.GetRequiredService<IOptions<ProxyOptions>>().Value.UnauthenticatedRateLimitPerSecond;
+        return RateLimitPartition.GetFixedWindowLimiter(
+            "address:" + (ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
+            _ => new FixedWindowRateLimiterOptions { PermitLimit = Math.Max(1, limit), Window = TimeSpan.FromSeconds(1), QueueLimit = 0 });
+    });
     o.AddPolicy("proxy", ctx =>
     {
         var limit = ctx.RequestServices.GetRequiredService<IOptions<ProxyOptions>>().Value.RateLimitPerSecond;
@@ -84,9 +97,11 @@ app.UseExceptionHandler(handler => handler.Run(async ctx =>
 }));
 
 app.UseCorrelationId();
+// Order matters: authentication identifies the caller, the rate limiter then applies the right
+// limit (per caller, or per address when there is no valid key), and only then is access decided.
 app.UseAuthentication();
-app.UseAuthorization();
 app.UseRateLimiter();
+app.UseAuthorization();
 
 app.MapPost("/api/proxy/execute", (HttpContext ctx, ProxyExecutor executor) => executor.ExecuteAsync(ctx))
     .RequireAuthorization("Caller")

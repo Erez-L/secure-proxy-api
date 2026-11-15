@@ -26,6 +26,11 @@ public static class ProxyErrors
     {
         ctx.Response.StatusCode = status;
         ctx.Response.Headers[SourceHeader] = "proxy";
+        // Set again here: the global exception handler clears headers written earlier in the pipeline.
+        ctx.Response.Headers[Correlation.HeaderName] = Correlation.Get(ctx);
+        // An oversized body is rejected without being read, so the server has to drop the
+        // connection afterwards. Say so, otherwise the client reuses it for its next request.
+        if (status == StatusCodes.Status413PayloadTooLarge) ctx.Response.Headers.Connection = "close";
         return ctx.Response.WriteAsJsonAsync(new ErrorResponse("proxy", code, message, Correlation.Get(ctx)));
     }
 
