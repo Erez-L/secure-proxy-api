@@ -45,6 +45,12 @@ dotnet test
 The same suite runs in GitHub Actions on every push (`.github/workflows/ci.yml`), together with an
 end-to-end run against SQL Server 2022 (`scripts/smoke-test.sh`).
 
+## Run in the browser (GitHub Codespaces)
+
+The repository contains a dev container (`.devcontainer/`) with the .NET 8 SDK and Docker. Open
+**Code > Codespaces > Create codespace on main**. When the container is ready, packages are restored
+and a development encryption key is already set, so step 2 below can be skipped.
+
 ## Run the API locally
 
 1. Start SQL Server:

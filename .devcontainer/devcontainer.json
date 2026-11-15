@@ -1,0 +1,14 @@
+{
+  "name": "Secure Proxy API",
+  "image": "mcr.microsoft.com/devcontainers/dotnet:8.0",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "forwardPorts": [5080],
+  "postCreateCommand": "dotnet restore && dotnet user-secrets set \"EncryptionKeys:dev-crm-key\" \"$(openssl rand -base64 32)\" --project src/SecureProxy.Api",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-dotnettools.csdevkit"]
+    }
+  }
+}
