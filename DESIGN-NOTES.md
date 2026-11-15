@@ -64,6 +64,25 @@ step ends the request on failure.
 | `RequestLogs` | Audit records. Metadata only. |
 | `ConfigurationHistory` | Who changed which configuration entity, when, and which properties (old/new). |
 
+### Operational settings
+
+The assignment lists "operational settings" among the things the database contains, without
+defining them. This solution splits them by scope:
+
+- **Per destination and per operation - in the database.** Request timeout, maximum request size,
+  maximum response size, permitted ports, the unknown-parameter policy and the encryption
+  requirement are columns of `Destinations` and `Operations`. They are versioned with `rowversion`,
+  recorded in `ConfigurationHistory`, and can differ for every destination and operation.
+- **Process-wide - in application configuration (`Proxy:*`).** The global request size cap, the
+  configuration cache lifetime, the per-destination concurrency limit and the per-caller rate limit.
+  These are needed before, or independently of, a database connection: the size cap is applied by
+  Kestrel before any request is read, and the cache lifetime decides how often the database is
+  consulted at all. Keeping them in configuration also means the proxy can still enforce its limits
+  while the database is unavailable.
+
+If central, runtime-editable management of the process-wide values were required, they would move
+to a small `OperationalSettings` key/value table read through the same cache and history mechanism.
+
 Unique indexes enforce one operation per key and one destination per key. `RequestLogs` has no
 foreign key to `Destinations`, so audit rows are independent of later configuration changes.
 

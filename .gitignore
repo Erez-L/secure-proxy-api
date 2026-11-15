@@ -3,3 +3,12 @@ obj/
 .vs/
 *.user
 TestResults/
+
+# Files written by scripts/smoke-test.sh and the README examples
+api.log
+envelope.json
+tampered.json
+body.json
+headers.txt
+status.txt
+put.json

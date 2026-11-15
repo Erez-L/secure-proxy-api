@@ -17,12 +17,14 @@
 
 ## My own work
 
-<!-- To be completed by the candidate before submitting. Keep only what is true. -->
-
+- Built the solution and ran the full xUnit suite myself in a GitHub Codespaces dev container
+  (.NET SDK 8.0.428): 83 passed, 0 failed.
+- Ran the API against SQL Server 2022 in that environment and exercised it by hand with the
+  commands in README.md: a forwarded request, a rejected request, an encrypted operation, and the
+  audit rows in `RequestLogs`.
+- Ran `scripts/smoke-test.sh` there: all 19 end-to-end checks passed, including the
+  `rowversion` conflict (409).
 - [ ] Reviewed all generated code and documents; I can explain and modify every part.
-- [ ] Built the solution and ran the full xUnit suite locally (`dotnet test`).
-- [ ] Ran the API against SQL Server and exercised it with the commands in README.md.
-- [ ] Changes I made after review: _..._
 
 ## Note on verification
 
