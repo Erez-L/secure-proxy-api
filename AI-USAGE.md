@@ -25,6 +25,7 @@
   audit rows in `RequestLogs`.
 - Ran `scripts/smoke-test.sh` there: all 19 end-to-end checks passed, including the
   `rowversion` conflict (409).
+- Reviewed all generated code and documents; I can explain and modify every part.
 - I remain responsible for the complete submitted solution.
 
 ## Note on verification
